@@ -1,8 +1,11 @@
 ﻿using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using System.Threading.Tasks;
 using JwtTokenAuthDemo.Entities;
 using JwtTokenAuthDemo.Models;
+using JwtTokenAuthDemo.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.Tokens;
@@ -11,59 +14,53 @@ namespace JwtTokenAuthDemo.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    public class AuthController(IConfiguration configuration) : Controller
+    public class AuthController(IAuthService authService) : Controller
     {
         public static User user = new();
 
         [HttpPost("register")]
-        public ActionResult<User> Register(UserDTO request)
+        public async Task<ActionResult<User>> Register(UserDTO request)
         {
-            var hashedPassword = new PasswordHasher<User>()
-                .HashPassword(user, request.Password);
-
-            user.Username = request.Username;
-            user.PasswordHash = hashedPassword;
+            var user  = await authService.RegisterAsync(request);
+            if (user is null)
+                return BadRequest("Username already exists!");
 
             return Ok(user);
         }
 
         [HttpPost("login")]
-        public ActionResult<string> Login(UserDTO request)
+        public async Task<ActionResult<TokenResponseDTO>> Login(UserDTO request)
         {
-            if (user.Username != request.Username)
-            {
-                return BadRequest("User not found");
-            }
-            if(new PasswordHasher<User>().VerifyHashedPassword(
-                user, user.PasswordHash, request.Password) == PasswordVerificationResult.Failed) {
-                return BadRequest("Invalid password !");
-            }
+            var result = await authService.LoginAsync(request);
+            if(result is null)
+                return BadRequest("Invalid username / password !");
 
-            string token = CreateToken(user);
-
-            return Ok(token);
+            return Ok(result);
         }
 
-        private string CreateToken(User user)
+        [HttpPost("refresh-token")]
+        public async Task<ActionResult<TokenResponseDTO>> RefreshToken(RefreshTokenRequestDTO request)
         {
-            var claims = new List<Claim>
-            {
-                new Claim(ClaimTypes.Name, user.Username)
-            };
-            var key = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(configuration.GetValue<string>("AppSettings:Token")!));
-
-            var creds  = new SigningCredentials(key, SecurityAlgorithms.HmacSha512);
-
-            var tokenDescriptor = new JwtSecurityToken(
-                issuer: configuration.GetValue<string>("AppSettings:Issuer"),
-                audience: configuration.GetValue<string>("AppSettings:Audience"),
-                claims: claims,
-                expires: DateTime.UtcNow.AddDays(1),
-                signingCredentials: creds
-            );
-
-            return new JwtSecurityTokenHandler().WriteToken(tokenDescriptor);
+            var result = await authService.RefreshTokenAsync(request);
+            if(result is null || result.AccessToken is null || result.RefreshToken is null)
+                return Unauthorized("Invalid refresh token!");
+            
+            return Ok(result);
         }
+
+        [Authorize]
+        [HttpGet]
+        public IActionResult AuthenticatedOnlyEndPoint()
+        {
+            return Ok("You are not authenticated!");
+        }
+
+        [Authorize(Roles = "Admin, Super")]
+        [HttpGet("admin-only")]
+        public IActionResult AdminOnlyEndPoint()
+        {
+            return Ok("You are admin!");
+        }
+
     }
 }
